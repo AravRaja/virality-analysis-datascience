@@ -18,6 +18,7 @@ FILES = [
     "feed_posts.tar.gz",
     "feed_posts_likes.tar.gz",
     "feed_bookmarks.csv",
+    "scripts.tar.gz",
 ]
 
 
@@ -49,6 +50,12 @@ def download_file(filename: str, dest_dir: Path) -> None:
         if tmp.exists():
             tmp.unlink()
         raise
+
+    if filename.endswith(".tar.gz"):
+        print(f"Extracting {filename}...")
+        with tarfile.open(dest) as tar:
+            tar.extractall(dest_dir)
+        print(f"Extracted to {dest_dir}")
 
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
