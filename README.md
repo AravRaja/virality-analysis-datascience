@@ -15,6 +15,8 @@ Eg. User A posts and User B reposts and User C reposts B and User D reposts C.
 
 shows how information spreads through the network and allows us to analyse the path a post takes as it spreads.
 
+
+
 ## Feature Engineering
 For each post we extract early activity features from the first 5–30 minutes after the post is created to train the virality model.
 
@@ -53,6 +55,7 @@ Analyse feature importance to understand which early signals are most predictive
 │   ├── processed/     # Cleaned data
 │   └── external/      # Third party data (e.g. Reddit etc )
 ├── notebooks/         # Analysis notebooks
+├── scripts/           # Utility scripts (e.g. data download)
 ├── src/
 │   ├── data/          # Preprocessing code will be here
 │   ├── features/      # Code to get features
@@ -64,6 +67,9 @@ Analyse feature importance to understand which early signals are most predictive
 └── tests/           
 ```
 
+
+
+
 ## Setup
 
 ```bash 
@@ -72,3 +78,47 @@ python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
+
+### Download all of [Bluesky Link](https://zenodo.org/records/14669616) (except user_posts as massive)
+
+```bash
+python scripts/download_data.py
+```
+
+| File | Size | 
+|------|------|
+| `interactions.csv.gz` | 1.0 GB |
+| `followers.csv.gz` | 491.3 MB |
+| `graphs.tar.gz` | 891.2 MB |
+| `feed_posts.tar.gz` | 16.4 MB |
+| `feed_post_likes.tar.gz` | 35.4 MB |
+| `feed_bookmarks.csv` | 552.8 kB |
+
+Downloads ~2.4 GB to `data/raw/` 
+
+### Loading the data
+
+```python
+import pandas as pd
+
+interactions = pd.read_csv("data/raw/interactions.csv.gz")
+followers = pd.read_csv("data/raw/followers.csv.gz")
+```
+
+### user_posts (Large File — Google Drive)
+
+`user_posts.tar.gz` is 19.5 GB (Compressed!) 
+ Didn't have enough storage to download it so uploaded to google drive and we can use through colab.
+
+**Google Drive link: <https://drive.google.com/file/d/16UMDa0yx7i_7GuQOoJjwFOnvRrFxE9s4/view?usp=sharing>**
+
+#### Setup (just once) (this is what chatGPT told me let me know if it works you may have to upload the dataset to your own google drive if not)
+
+1. Open the shared Drive link above
+2. Click **"Add shortcut to Drive"** and place it anywhere in your Drive (e.g. `My Drive/bluesky_data/`)
+
+#### Reading in Colab 
+
+See notebook that I used for initial data exploration: [bluesky_analysis](/notebooks/bluesky_user_posts_eda.ipynb) . Key point is it doesn't decompress tar, loads at 100k post which takes a bit and then you can save it as a csv to your google drive to use again. You can customise the program to get whatver u want out of the tar.
+
+We will eventually need to extract the tar for better analysis someone should probably do it this week.
