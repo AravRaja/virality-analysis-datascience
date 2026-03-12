@@ -1,4 +1,4 @@
-# Project Idea: Predicting Early Virality on Bluesky
+# Predicting Early Virality on Bluesky
 
 ## Objectives
 Analyse how posts spread through the Bluesky social network. Understand how information propagates through repost chains and how network structure influences spread. Build a model that predicts whether a post will go viral based only on the first few minutes of activity.
