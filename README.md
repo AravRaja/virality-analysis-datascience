@@ -79,7 +79,7 @@ source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### Download all of [Bluesky Link](https://zenodo.org/records/14669616) (except user_posts as massive)
+### Downloads all of [Bluesky Link](https://zenodo.org/records/14669616) (except user_posts as massive)
 
 ```bash
 python scripts/download_data.py
@@ -96,13 +96,23 @@ python scripts/download_data.py
 
 Downloads ~2.4 GB to `data/raw/` 
 
+### Convert to parquet for way faster loading
+
+```bash
+python scripts/to_parquet.py
+```
+
+Saves all files to `data/processed/` as parquet
+
 ### Loading the data
 
 ```python
 import pandas as pd
 
-interactions = pd.read_csv("data/raw/interactions.csv.gz")
-followers = pd.read_csv("data/raw/followers.csv.gz")
+interactions = pd.read_parquet("data/processed/interactions.parquet")
+followers    = pd.read_parquet("data/processed/followers.parquet")
+reposts      = pd.read_parquet("data/processed/reposts.parquet")
+replies      = pd.read_parquet("data/processed/replies.parquet")
 ```
 
 ### user_posts (Large File — Google Drive)
