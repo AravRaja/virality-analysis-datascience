@@ -1,0 +1,15 @@
+pandas
+numpy
+matplotlib
+seaborn
+scikit-learn
+xgboost
+networkx
+python-louvain
+igraph
+jupyter
+notebook
+ipykernel
+requests
+tqdm
+pyarrow
