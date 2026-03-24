@@ -3,11 +3,11 @@ step_02_early_like_features.py
 
 Computes post-level early activity features from timestamped likes:
 
-  Layer 1 — Like Velocity & Acceleration:
+    Layer 1 - Like Velocity & Acceleration:
     likes_5m, likes_15m, likes_30m
     likes_15_to_30m, like_acceleration, like_velocity_ratio
 
-  Layer 2 — Network Quality of Early Likers:
+    Layer 2 - Network Quality of Early Likers:
     max_liker_followers, mean_liker_followers, median_liker_followers
     sum_liker_reach, whale_count, reach_concentration
 
@@ -74,7 +74,7 @@ likes_with_time = likes.merge(
 
 print(f"  Likes matched to posts: {len(likes_with_time):,}")
 
-# Compute time delta once — reused for all window filters
+# Compute time delta once - reused for all window filters
 likes_with_time['minutes_after'] = (
     (likes_with_time['liked_at'] - likes_with_time['created_at'])
     .dt.total_seconds() / 60.0
@@ -85,11 +85,11 @@ likes_with_time['minutes_after'] = (
 # =============================================================================
 
 print("\n" + "=" * 70)
-print("STEP 3: Filtering to early window (0–30 minutes)")
+print("STEP 3: Filtering to early window (0-30 minutes)")
 print("=" * 70)
 
 # Apply two-sided filter:
-#   >= 0  (exclude likes before post creation — clock skew / data artifacts)
+#   >= 0  (exclude likes before post creation - clock skew / data artifacts)
 #   <= 30 (our maximum early window)
 early_mask = (
     (likes_with_time['minutes_after'] >= 0) &
@@ -106,13 +106,13 @@ after_30m = (likes_with_time['minutes_after'] > 30).sum()
 
 print(f"  Total likes with timestamps:   {total_likes:>12,}")
 print(f"  Likes before post creation:    {before_post:>12,} (excluded)")
-print(f"  Likes within 0–30m:            {early_count:>12,} ← kept")
+print(f"  Likes within 0-30m:            {early_count:>12,} <- kept")
 print(f"  Likes after 30m:               {after_30m:>12,} (excluded)")
 print(f"  Early like rate:               {early_count/total_likes*100:.1f}%")
 
 # Posts that received at least one early like
 posts_with_early_likes = early_likes['post_id'].nunique()
-print(f"\n  Posts with ≥1 early like: {posts_with_early_likes:,} / {len(posts):,} "
+print(f"\n  Posts with >=1 early like: {posts_with_early_likes:,} / {len(posts):,} "
       f"({posts_with_early_likes/len(posts)*100:.1f}%)")
 
 # Free the full likes table from memory
@@ -135,7 +135,7 @@ likes_30m = (
     .reset_index(name='likes_30m')
 )
 
-# 15m window (subset of 30m — no re-merge needed)
+# 15m window (subset of 30m - no re-merge needed)
 likes_15m = (
     early_likes[early_likes['minutes_after'] <= 15]
     .groupby('post_id')
@@ -143,7 +143,7 @@ likes_15m = (
     .reset_index(name='likes_15m')
 )
 
-# 5m window (even tighter — captures the immediate burst)
+# 5m window (even tighter - captures the immediate burst)
 likes_5m = (
     early_likes[early_likes['minutes_after'] <= 5]
     .groupby('post_id')
@@ -369,7 +369,7 @@ assert early_features['post_id'].nunique() == len(early_features), \
 assert early_features.isnull().sum().sum() == 0, \
     f"Unexpected nulls:\n{early_features.isnull().sum()[early_features.isnull().sum() > 0]}"
 
-print("  ✅ All validation checks passed")
+print("  All validation checks passed")
 
 # Quick correlation with target (preview of predictive power)
 with_target = early_features.merge(
@@ -392,10 +392,10 @@ for feat, corr in correlations.head(10).items():
 print(f"\n  Posts with zero early likes:   "
       f"{(early_features['likes_30m'] == 0).sum():,} "
       f"({(early_features['likes_30m'] == 0).sum()/len(early_features)*100:.1f}%)")
-print(f"  Posts with ≥1 early like:      "
+print(f"  Posts with >=1 early like:      "
       f"{(early_features['likes_30m'] > 0).sum():,} "
       f"({(early_features['likes_30m'] > 0).sum()/len(early_features)*100:.1f}%)")
-print(f"  Posts with ≥10 early likes:    "
+print(f"  Posts with >=10 early likes:    "
       f"{(early_features['likes_30m'] >= 10).sum():,} "
       f"({(early_features['likes_30m'] >= 10).sum()/len(early_features)*100:.1f}%)")
 
@@ -414,25 +414,25 @@ for col in ['likes_30m', 'like_acceleration', 'like_velocity_ratio',
 output_path = os.path.join(FEATURES_DIR, "early_like_features.parquet")
 early_features.to_parquet(output_path, index=False)
 
-print(f"\n  ✅ Saved: {output_path}")
-print(f"     {len(early_features):,} posts × {len(feature_cols) - 1} features")
+print(f"\n  Saved: {output_path}")
+print(f"     {len(early_features):,} posts x {len(feature_cols) - 1} features")
 
 # =============================================================================
 # SUMMARY
 # =============================================================================
 
 print("\n" + "=" * 70)
-print("EARLY LIKE FEATURES COMPLETE — SUMMARY")
+print("EARLY LIKE FEATURES COMPLETE - SUMMARY")
 print("=" * 70)
 print(f"""
   Features computed: {len(feature_cols) - 1}
   
-  Layer 1 — Velocity & Acceleration:
+    Layer 1 - Velocity & Acceleration:
     likes_5m, likes_15m, likes_30m
     likes_15_to_30m, likes_5_to_15m
     like_acceleration, like_velocity_ratio, early_burst_ratio
   
-  Layer 2 — Network Quality:
+    Layer 2 - Network Quality:
     unique_early_likers
     max_liker_followers, mean_liker_followers, median_liker_followers
     sum_liker_reach, whale_count, whale_ratio, reach_concentration

@@ -20,12 +20,12 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 # CONFIGURATION
 # =============================================================================
 
-DATA_DIR = "../data/processed"                    # where your parquets live
-OUTPUT_DIR = os.path.join(DATA_DIR, "features") # where we'll save outputs
+DATA_DIR = "../data/processed"                    # where parquets live
+OUTPUT_DIR = os.path.join(DATA_DIR, "features") # where to save outputs
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # Virality threshold: a post is "viral" if repost_count >= this
-# We'll compute this dynamically (top N percentile) but also allow a fixed value
+# Compute this dynamically (top N percentile) but also allow a fixed value
 VIRALITY_PERCENTILE = 90  # top 10% = "viral"
 
 # =============================================================================
@@ -38,7 +38,7 @@ def parse_int_date(series, name="date"):
     
     Handles two formats found in this dataset:
       - 12-digit: YYYYMMDDHHmm  (e.g., 202309192352)
-      - 8-digit:  YYYYMMDD      (e.g., 20230826) — found in quotes.parquet
+            - 8-digit:  YYYYMMDD      (e.g., 20230826) - found in quotes.parquet
     
     Returns a datetime Series. Unparseable values become NaT.
     """
@@ -62,7 +62,7 @@ def parse_int_date(series, name="date"):
     
     n_failed = result.isna().sum() - series.isna().sum()
     if n_failed > 0:
-        print(f"  ⚠️  {n_failed:,} values in '{name}' could not be parsed")
+        print(f"  WARNING: {n_failed:,} values in '{name}' could not be parsed")
     
     return result
 
@@ -86,7 +86,7 @@ for f in feed_files:
     df = pd.read_parquet(f)
     df['feed'] = feed_name
     all_posts.append(df)
-    print(f"  Loaded {fname:45s} → {len(df):>8,} posts")
+    print(f"  Loaded {fname:45s} -> {len(df):>8,} posts")
 
 posts = pd.concat(all_posts, ignore_index=True)
 print(f"\n  Combined total: {len(posts):,} rows")
@@ -114,10 +114,10 @@ print(f"  Posts in multiple feeds: {(feed_map['feed_count'] > 1).sum():,}")
 posts_clean['created_at'] = parse_int_date(posts_clean['date'], name='post_date')
 n_null_dates = posts_clean['created_at'].isna().sum()
 if n_null_dates > 0:
-    print(f"  ⚠️  Dropping {n_null_dates:,} posts with unparseable dates")
+    print(f"  WARNING: Dropping {n_null_dates:,} posts with unparseable dates")
     posts_clean = posts_clean.dropna(subset=['created_at'])
 
-print(f"  Date range: {posts_clean['created_at'].min()} → {posts_clean['created_at'].max()}")
+print(f"  Date range: {posts_clean['created_at'].min()} -> {posts_clean['created_at'].max()}")
 
 
 # =============================================================================
@@ -138,7 +138,7 @@ for idx, val in repost_stats.items():
 
 # Calculate the threshold
 threshold = posts_clean['repost_count'].quantile(VIRALITY_PERCENTILE / 100)
-# Round up to nearest integer (you need at least this many reposts)
+# Round up to nearest integer (need at least this many reposts)
 threshold = int(np.ceil(threshold))
 
 print(f"\n  Virality threshold (top {100 - VIRALITY_PERCENTILE}%): >= {threshold} reposts")
@@ -170,7 +170,7 @@ for f in like_files:
     fname = os.path.basename(f)
     df = pd.read_parquet(f)
     all_likes.append(df)
-    print(f"  Loaded {fname:45s} → {len(df):>10,} likes")
+    print(f"  Loaded {fname:45s} -> {len(df):>10,} likes")
 
 likes = pd.concat(all_likes, ignore_index=True)
 print(f"\n  Combined total: {len(likes):,} likes")
@@ -179,16 +179,16 @@ print(f"\n  Combined total: {len(likes):,} likes")
 likes['liked_at'] = parse_int_date(likes['date'], name='like_date')
 
 # 3b. Remove likes with impossible dates
-# Validation showed max like date is 203010180531 — clearly erroneous
+# Validation showed max like date is 203010180531 - clearly erroneous
 # Dataset posts span 2023-02 to 2024-03, so cap likes at 2024-04-01
 DATE_CUTOFF = pd.Timestamp("2024-04-01")
 bad_dates = (likes['liked_at'] > DATE_CUTOFF) | (likes['liked_at'].isna())
 n_bad = bad_dates.sum()
 if n_bad > 0:
-    print(f"  ⚠️  Removing {n_bad:,} likes with dates after {DATE_CUTOFF.date()} or unparseable")
+    print(f"  WARNING: Removing {n_bad:,} likes with dates after {DATE_CUTOFF.date()} or unparseable")
     likes = likes[~bad_dates].copy()
 
-# 3c. Keep only likes for posts in our clean posts table
+# 3c. Keep only likes for posts in clean posts table
 known_posts = set(posts_clean['post_id'].unique())
 likes = likes[likes['post_id'].isin(known_posts)].copy()
 print(f"  Likes matching known posts: {len(likes):,}")
@@ -201,7 +201,7 @@ if before != after:
     print(f"  Dedup removed {before - after:,} duplicate likes")
 
 print(f"  Final clean likes: {len(likes):,}")
-print(f"  Date range: {likes['liked_at'].min()} → {likes['liked_at'].max()}")
+print(f"  Date range: {likes['liked_at'].min()} -> {likes['liked_at'].max()}")
 
 
 # =============================================================================
@@ -216,8 +216,8 @@ followers = pd.read_parquet(os.path.join(DATA_DIR, "followers.parquet"))
 print(f"  Follower edges loaded: {len(followers):,}")
 
 # follower_id follows followed_id
-# → follower_count  = how many people follow you (inbound)
-# → following_count = how many people you follow (outbound)
+# -> follower_count  = how many people follow you (inbound)
+# -> following_count = how many people you follow (outbound)
 
 follower_counts = (
     followers
@@ -329,22 +329,22 @@ post_cols = [c for c in post_cols if c in posts_clean.columns]
 
 base_posts_path = os.path.join(OUTPUT_DIR, "base_posts.parquet")
 posts_clean[post_cols].to_parquet(base_posts_path, index=False)
-print(f"  ✅ Saved: {base_posts_path}")
-print(f"     {len(posts_clean):,} posts × {len(post_cols)} columns")
+print(f"  Saved: {base_posts_path}")
+print(f"     {len(posts_clean):,} posts x {len(post_cols)} columns")
 
 # Save likes
 like_cols = ['like_id', 'user_id', 'post_id', 'liked_at']
 like_cols = [c for c in like_cols if c in likes.columns]
 base_likes_path = os.path.join(OUTPUT_DIR, "base_likes.parquet")
 likes[like_cols].to_parquet(base_likes_path, index=False)
-print(f"  ✅ Saved: {base_likes_path}")
-print(f"     {len(likes):,} likes × {len(like_cols)} columns")
+print(f"  Saved: {base_likes_path}")
+print(f"     {len(likes):,} likes x {len(like_cols)} columns")
 
 # Save follower counts (needed for network features in later steps)
 follower_path = os.path.join(OUTPUT_DIR, "follower_counts.parquet")
 user_counts.to_parquet(follower_path, index=False)
-print(f"  ✅ Saved: {follower_path}")
-print(f"     {len(user_counts):,} users × {len(user_counts.columns)} columns")
+print(f"  Saved: {follower_path}")
+print(f"     {len(user_counts):,} users x {len(user_counts.columns)} columns")
 
 
 # =============================================================================
@@ -352,7 +352,7 @@ print(f"     {len(user_counts):,} users × {len(user_counts.columns)} columns")
 # =============================================================================
 
 print("\n" + "=" * 70)
-print("FOUNDATION COMPLETE — SUMMARY")
+print("FOUNDATION COMPLETE - SUMMARY")
 print("=" * 70)
 print(f"""
   Posts:           {len(posts_clean):>10,} (deduplicated)
