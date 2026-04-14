@@ -25,14 +25,12 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 
-# ── Allow running from repo root or scripts/ ──────────────────────────────────
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from datasets.bluesky_cascade.cascade_store import CascadeStore
 
-# =============================================================================
+
 # CONFIGURATION
-# =============================================================================
 
 CASCADE_DIR = ROOT / "datasets" / "bluesky_cascade"
 OUTPUT_DIR  = CASCADE_DIR
@@ -42,9 +40,9 @@ WINDOWS_MIN     = [5, 15, 30, 60]
 WHALE_THRESHOLD = 1_000
 
 
-# =============================================================================
+
 # HELPERS
-# =============================================================================
+
 
 def window_counts(events: pd.DataFrame,
                   posts: pd.DataFrame,
@@ -189,16 +187,14 @@ def print_ttf_stats(name: str, df: pd.DataFrame, col: str, sentinel: float = 9_9
         )
 
 
-# =============================================================================
 # MAIN
-# =============================================================================
 
 def main():
     print("=" * 70)
     print("FEATURE EXTRACTION — CascadeStore")
     print("=" * 70)
 
-    # ── Load ──────────────────────────────────────────────────────────────────
+    # Load 
     print(f"\n  Loading CascadeStore from: {CASCADE_DIR}")
     store   = CascadeStore(CASCADE_DIR)
     summary = store.summary()
@@ -221,9 +217,8 @@ def main():
           f"|  non-viral: {(~posts['is_viral']).sum():,}  "
           f"|  viral rate: {posts['is_viral'].mean()*100:.2f}%")
 
-    # =========================================================================
     # BLOCK 1: WINDOW COUNTS
-    # =========================================================================
+    
     print("\n" + "=" * 70)
     print("BLOCK 1: Window counts (5m / 15m / 30m / 60m)")
     print("=" * 70)
@@ -238,9 +233,9 @@ def main():
     print_window_stats("replies", reply_counts,  "reply",  WINDOWS_MIN)
     print_window_stats("quotes",  quote_counts,  "quote",  WINDOWS_MIN)
 
-    # =========================================================================
+    
     # BLOCK 2: VELOCITY & ACCELERATION FEATURES
-    # =========================================================================
+    
     print("\n" + "=" * 70)
     print("BLOCK 2: Velocity & acceleration features")
     print("=" * 70)
@@ -255,9 +250,9 @@ def main():
     print_velocity_stats("replies", reply_counts,  "reply")
     print_velocity_stats("quotes",  quote_counts,  "quote")
 
-    # =========================================================================
+    
     # BLOCK 3: TIME-TO-FIRST-EVENT FEATURES
-    # =========================================================================
+    
     print("\n" + "=" * 70)
     print("BLOCK 3: Time-to-first-event (seconds from post creation)")
     print("=" * 70)
@@ -272,9 +267,8 @@ def main():
     print_ttf_stats("reply",  ttf_reply,  "ttf_reply_sec")
     print_ttf_stats("quote",  ttf_quote,  "ttf_quote_sec")
 
-    # =========================================================================
     # BLOCK 4: CONTENT FEATURES
-    # =========================================================================
+    
     print("\n" + "=" * 70)
     print("BLOCK 4: Content & author features")
     print("=" * 70)
@@ -303,9 +297,9 @@ def main():
     print(f"  author_is_whale   rate={content['author_is_whale'].mean()*100:.1f}%  "
           f"| count={content['author_is_whale'].sum():,}")
 
-    # =========================================================================
+    
     # BLOCK 5: COMBINED ENGAGEMENT FEATURES (30m)
-    # =========================================================================
+    
     print("\n" + "=" * 70)
     print("BLOCK 5: Combined engagement features (30m window)")
     print("=" * 70)
@@ -342,9 +336,9 @@ def main():
     print(f"  reply_repost_ratio_30m  mean={combined_30m['reply_repost_ratio_30m'].mean():.2f}")
     print(f"  quote_repost_ratio_30m  mean={combined_30m['quote_repost_ratio_30m'].mean():.2f}")
 
-    # =========================================================================
+    
     # BLOCK 6: ASSEMBLE FINAL FEATURE TABLE
-    # =========================================================================
+    
     print("\n" + "=" * 70)
     print("BLOCK 6: Assembling final feature table")
     print("=" * 70)
@@ -364,14 +358,14 @@ def main():
     print(f"  Viral posts:     {feat['is_viral'].sum():,}  ({feat['is_viral'].mean()*100:.2f}%)")
     print(f"  Non-viral posts: {(feat['is_viral']==0).sum():,}")
 
-    # =========================================================================
+    
     # BLOCK 7: VALIDATION
-    # =========================================================================
+    
     print("\n" + "=" * 70)
     print("BLOCK 7: Validation")
     print("=" * 70)
 
-    # ── Null check ────────────────────────────────────────────────────────────
+    # Null check 
     null_counts = feat.isnull().sum()
     null_counts = null_counts[null_counts > 0]
     if len(null_counts) > 0:
@@ -381,11 +375,11 @@ def main():
     else:
         print("  ✓ No null values")
 
-    # ── Duplicate URI check ───────────────────────────────────────────────────
+    # Duplicate URI check 
     assert feat["uri"].nunique() == len(feat), "Duplicate URIs in output!"
     print("  ✓ All URIs unique")
 
-    # ── Monotonic window check ────────────────────────────────────────────────
+    # Monotonic window check 
     # Counts at 15m must be <= counts at 30m, etc — catches time_delta_sec bugs
     for prefix in ["repost", "like", "reply", "quote"]:
         for w1, w2 in [(5, 15), (15, 30), (30, 60)]:
@@ -395,7 +389,7 @@ def main():
                 status = "✓" if violations == 0 else f"⚠ {violations} violations"
                 print(f"  {status}  {prefix}: {w1}m ≤ {w2}m counts")
 
-    # ── Viral vs Non-Viral mean comparison ───────────────────────────────────
+    # Viral vs Non-Viral mean comparison 
     check_cols = [
         "repost_5m", "repost_30m", "repost_velocity_ratio", "repost_burst_ratio",
         "like_5m",   "like_30m",   "like_velocity_ratio",   "like_burst_ratio",
@@ -413,9 +407,9 @@ def main():
         ratio   = v_mean / (nv_mean + 0.001)
         print(f"  {col:<35s} {v_mean:>12.3f} {nv_mean:>14.3f} {ratio:>7.1f}x")
 
-    # =========================================================================
+    
     # BLOCK 8: SAVE
-    # =========================================================================
+    
     print("\n" + "=" * 70)
     print("BLOCK 8: Saving outputs")
     print("=" * 70)
