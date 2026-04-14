@@ -27,8 +27,8 @@ from tqdm.asyncio import tqdm_asyncio
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-INPUT_CSV   = "label_sample.csv"
-OUTPUT_CSV  = "label_sample_emotions4.csv"
+INPUT_CSV   = "label_anger_boost3.csv"
+OUTPUT_CSV  = "label_anger_boost3_emotions.csv"
 MODEL = "gemini-2.5-flash"
 CONCURRENCY = 10           # Gemini Flash has generous rate limits
 RETRY_LIMIT = 3
@@ -44,52 +44,94 @@ Classify the Bluesky post into EXACTLY ONE of these 5 emotions:
   joy | anger | sadness | moral_outrage | neutral
 
 Definitions:
-  joy           — happiness, delight, excitement, pride, warmth, humour, love
-  anger         — frustration, irritation, personal annoyance
-  sadness       — grief, disappointment, melancholy, longing
-  moral_outrage — anger at perceived injustice, wrongdoing, or systemic failure; indignation on behalf of others
-  neutral       — strictly factual, zero emotional charge. If in doubt, pick the closest emotion instead.
+  joy           — happiness, delight, excitement, pride, warmth, humour, love, amusement, gratitude
+  anger         — frustration, irritation, or annoyance directed at a PERSONAL inconvenience or specific individual; the target is YOU or someone who wronged YOU directly
+  sadness       — grief, loss, disappointment, melancholy, longing, hopelessness about one's own situation
+  moral_outrage — anger or disgust directed at a SYSTEMIC injustice, institutional failure, wrongdoing affecting others, or a violation of shared values; the target is a system, policy, group, or abstract wrong
+  neutral       — strictly factual reporting with zero emotional charge; the author has no stake or feeling in what they are describing
+
+Critical distinctions:
+  anger vs moral_outrage — Ask: is the author upset on their OWN behalf (anger) or on behalf of OTHERS / society (moral_outrage)?
+    "My landlord is impossible" → anger (personal grievance)
+    "Landlords are destroying housing for everyone" → moral_outrage (systemic)
+  sadness vs neutral — Sadness requires personal emotional investment. A news headline with no authorial feeling = neutral.
+  joy vs neutral — Dry humour or mild satisfaction without enthusiasm = neutral. Clear delight or excitement = joy.
 
 Rules:
 - Pick the DOMINANT emotion even if multiple are present.
-- Distinguish anger (personal) from moral_outrage (systemic/injustice-driven).
-- neutral ONLY when there is genuinely zero emotional charge.
+- neutral ONLY when there is genuinely zero emotional charge. If in doubt, pick the closest emotion instead.
 - Do NOT default to neutral for ambiguous posts. Commit to the closest emotion.
+- Emojis are strong signals — weight them accordingly.
 - Return ONLY a JSON object with two keys:
     {"emotion": "<label>", "confidence": <0.0–1.0>}
   No explanation. No markdown. No extra text."""
 
-# 12 diverse few-shot examples covering all 9 classes
+# 14 diverse few-shot examples — 2-3 per class, including hard borderline cases
 FEW_SHOTS = [
+    # ── joy ──────────────────────────────────────────────────────────────────
     (
         "Just got the job offer!! I've been waiting 3 months for this 😭🎉",
         {"emotion": "joy", "confidence": 0.97}
-    ),
-    (
-        "They're raising tube fares AGAIN while service gets worse every year. Absolutely done.",
-        {"emotion": "anger", "confidence": 0.95}
-    ),
-    (
-        "Miss my dog so much. Two years since she passed and I still reach for her lead by the door.",
-        {"emotion": "sadness", "confidence": 0.96}
-    ),
-    (
-        "The UK base rate was held at 4.5% today by the Bank of England.",
-        {"emotion": "neutral", "confidence": 0.97}
     ),
     (
         "Can't believe how good this turned out AND how cheap the ingredients were 😂 recipe in thread",
         {"emotion": "joy", "confidence": 0.90}
     ),
     (
+        "My daughter took her first steps today. I ugly cried in the kitchen for ten minutes.",
+        {"emotion": "joy", "confidence": 0.93}
+    ),
+    # ── sadness ───────────────────────────────────────────────────────────────
+    (
+        "Miss my dog so much. Two years since she passed and I still reach for her lead by the door.",
+        {"emotion": "sadness", "confidence": 0.96}
+    ),
+    (
+        "Got the rejection email this morning. Third time applying. Starting to think this career isn't for me.",
+        {"emotion": "sadness", "confidence": 0.92}
+    ),
+    (
+        "Town centre where I grew up is all payday loan shops and empty units now. Just feels like loss.",
+        {"emotion": "sadness", "confidence": 0.88}
+    ),
+    # ── anger (personal) ──────────────────────────────────────────────────────
+    (
+        "They're raising tube fares AGAIN while service gets worse every year. Absolutely done.",
+        {"emotion": "anger", "confidence": 0.91}
+    ),
+    (
+        "My neighbour has had a leaf blower going for 45 minutes. I am going to lose my mind.",
+        {"emotion": "anger", "confidence": 0.95}
+    ),
+    # ── moral_outrage (systemic) ──────────────────────────────────────────────
+    (
         "This is what happens when corporations are allowed to write their own regulations. People died. Nobody will go to prison.",
-        {"emotion": "moral_outrage", "confidence": 0.95}
+        {"emotion": "moral_outrage", "confidence": 0.96}
     ),
     (
         "The landlord raised rent 40% and the council did nothing. The system is designed to protect them, not us.",
         {"emotion": "moral_outrage", "confidence": 0.93}
     ),
+    (
+        "A child died waiting 14 hours in A&E. The Health Secretary went on holiday. This is not normal and we should not accept it.",
+        {"emotion": "moral_outrage", "confidence": 0.97}
+    ),
+    # ── neutral ───────────────────────────────────────────────────────────────
+    (
+        "The UK base rate was held at 4.5% today by the Bank of England.",
+        {"emotion": "neutral", "confidence": 0.97}
+    ),
+    (
+        "Parliament votes on the amended bill tomorrow at 14:00. Live coverage on BBC Two.",
+        {"emotion": "neutral", "confidence": 0.96}
+    ),
+    # ── hard borderline: anger vs moral_outrage ───────────────────────────────
+    (
+        "My GP surgery has a 3-week wait for a routine appointment. I just need to be seen.",
+        {"emotion": "anger", "confidence": 0.82}
+    ),
 ]
+
 
 def build_contents(post_text: str) -> list:
     """Build Gemini contents list with few-shot examples then the target post."""
