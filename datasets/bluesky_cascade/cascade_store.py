@@ -93,6 +93,8 @@ class CascadeStore:
                 "total_quotes": post.get("total_quotes") or 0,
                 "time_to_first_repost_sec": first_event(self._ri),
                 "time_to_first_like_sec": first_event(self._li),
+                "time_to_first_reply_sec": first_event(self._rpi),
+                "time_to_first_quote_sec": first_event(self._qi),
             }
             for _, r in tf.iterrows():
                 m = int(r["minute"])
@@ -116,3 +118,5 @@ class CascadeStore:
             "replies": len(self._replies),
             "quotes": len(self._quotes),
         }
+        
+
