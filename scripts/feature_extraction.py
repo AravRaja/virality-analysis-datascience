@@ -25,6 +25,8 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"  # prevent OMP crash on Windows/Anaconda
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from datasets.bluesky_cascade.cascade_store import CascadeStore
@@ -338,19 +340,10 @@ def main():
     print(f"  quote_repost_ratio_30m  mean={combined_30m['quote_repost_ratio_30m'].mean():.2f}")
 
     
-    # BLOCK 6: ASSEMBLE FINAL FEATURE TABLE
-    
-    print("\n" + "=" * 70)
-    print("BLOCK 6: Assembling final feature table")
-    print("=" * 70)
-
-    feat = posts[["uri", "is_viral"]].copy()
-    feat["is_viral"] = feat["is_viral"].astype(int)
-
-    # BLOCK 9: EMOTION FEATURES
+    # BLOCK 6: EMOTION FEATURES
 
     print("\n" + "=" * 70)
-    print("BLOCK 9: Emotion features (RoBERTa)")
+    print("BLOCK 6: Emotion features (RoBERTa)")
     print("=" * 70)
 
     tokenizer, emotion_model, device = load_model(HF_MODEL)
@@ -371,6 +364,16 @@ def main():
     for lbl, cnt in dist.items():
         print(f"    {lbl:<20s}: {cnt:>6,}  ({cnt/len(emotion_feat)*100:.1f}%)")
 
+
+    # BLOCK 7: ASSEMBLE FINAL FEATURE TABLE
+
+    print("\n" + "=" * 70)
+    print("BLOCK 7: Assembling final feature table")
+    print("=" * 70)
+
+    feat = posts[["uri", "is_viral"]].copy()
+    feat["is_viral"] = feat["is_viral"].astype(int)
+
     for block_df in [
         repost_counts, like_counts, reply_counts, quote_counts,
         ttf_repost, ttf_like, ttf_reply, ttf_quote,
@@ -385,10 +388,10 @@ def main():
     print(f"  Non-viral posts: {(feat['is_viral']==0).sum():,}")
 
     
-    # BLOCK 7: VALIDATION
+    # BLOCK 8: VALIDATION
     
     print("\n" + "=" * 70)
-    print("BLOCK 7: Validation")
+    print("BLOCK 8: Validation")
     print("=" * 70)
 
     # Null check 
@@ -434,10 +437,10 @@ def main():
         print(f"  {col:<35s} {v_mean:>12.3f} {nv_mean:>14.3f} {ratio:>7.1f}x")
 
     
-    # BLOCK 8: SAVE
+    # BLOCK 9: SAVE
     
     print("\n" + "=" * 70)
-    print("BLOCK 8: Saving outputs")
+    print("BLOCK 9: Saving outputs")
     print("=" * 70)
 
     parquet_path = OUTPUT_DIR / "training_features.parquet"

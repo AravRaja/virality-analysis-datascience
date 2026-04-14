@@ -4,12 +4,11 @@ emotion_features.py
 Runs the fine-tuned RoBERTa emotion classifier over root post text and
 appends emotion probability columns to training_features.parquet.
 
-Model:  models/emotion_classifier/
+Model:  bobloker/emotion-classifier-roberta (HF Hub)
 Labels: joy | moral_outrage | neutral | sadness | anger
 
 Inputs:
     datasets/bluesky_cascade/training_features.parquet  (must exist)
-    models/emotion_classifier/                          (model weights)
 
 Output:
     datasets/bluesky_cascade/training_features.parquet  (overwritten in place)
