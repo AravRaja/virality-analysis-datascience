@@ -31,3 +31,6 @@ Thumbs.db
 *.env
 secrets.json
 
+# Local model weights (loaded from HF Hub at runtime)
+models/
+

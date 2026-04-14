@@ -57,6 +57,9 @@ expected_cols = [
     # combined
     "total_engagement_30m", "like_repost_ratio_30m",
     "reply_repost_ratio_30m", "quote_repost_ratio_30m",
+    # emotion
+    "emotion_joy", "emotion_moral_outrage", "emotion_neutral",
+    "emotion_sadness", "emotion_anger", "emotion_label",
     # target
     "is_viral",
 ]
@@ -180,6 +183,8 @@ compare_cols = [
     "repost_burst_ratio", "like_burst_ratio",
     "ttf_repost_sec", "ttf_like_sec",
     "total_engagement_30m", "author_followers",
+    "emotion_joy", "emotion_moral_outrage", "emotion_neutral",
+    "emotion_sadness", "emotion_anger",
 ]
 compare_cols = [c for c in compare_cols if c in feat.columns]
 

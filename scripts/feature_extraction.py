@@ -28,6 +28,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from datasets.bluesky_cascade.cascade_store import CascadeStore
+from scripts.emotion_features import load_model, predict_emotions, HF_MODEL
 
 
 # CONFIGURATION
@@ -346,11 +347,36 @@ def main():
     feat = posts[["uri", "is_viral"]].copy()
     feat["is_viral"] = feat["is_viral"].astype(int)
 
+    # BLOCK 9: EMOTION FEATURES
+
+    print("\n" + "=" * 70)
+    print("BLOCK 9: Emotion features (RoBERTa)")
+    print("=" * 70)
+
+    tokenizer, emotion_model, device = load_model(HF_MODEL)
+    id2label = emotion_model.config.id2label
+    labels   = [id2label[i] for i in range(len(id2label))]
+
+    texts = posts["text"].tolist()
+    print(f"  Running inference on {len(texts):,} posts ...")
+    probs = predict_emotions(texts, tokenizer, emotion_model, device)
+
+    emotion_feat = posts[["uri"]].copy()
+    for i, label in enumerate(labels):
+        emotion_feat[f"emotion_{label}"] = probs[:, i].astype("float32")
+    emotion_feat["emotion_label"] = [labels[i] for i in probs.argmax(axis=1)]
+
+    print("\n  Emotion distribution (argmax):")
+    dist = emotion_feat["emotion_label"].value_counts()
+    for lbl, cnt in dist.items():
+        print(f"    {lbl:<20s}: {cnt:>6,}  ({cnt/len(emotion_feat)*100:.1f}%)")
+
     for block_df in [
         repost_counts, like_counts, reply_counts, quote_counts,
         ttf_repost, ttf_like, ttf_reply, ttf_quote,
         content,
         combined_30m.drop(columns=["repost_30m", "like_30m", "reply_30m", "quote_30m"]),
+        emotion_feat,
     ]:
         feat = feat.merge(block_df, on="uri", how="left")
 
