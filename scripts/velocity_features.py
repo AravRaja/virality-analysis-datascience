@@ -1,5 +1,5 @@
 """
-step_02_early_like_features.py
+step_02_early_like_features
 
 Computes post-level early activity features from timestamped likes:
 
@@ -26,7 +26,7 @@ import os
 # CONFIGURATION
 # =============================================================================
 
-FEATURES_DIR = os.path.join("../data", "processed", "features")
+FEATURES_DIR = "../data/processed/features"                    # where parquets live
 
 # Time windows
 WINDOW_5M  = pd.Timedelta(minutes=5)

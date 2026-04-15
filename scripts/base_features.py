@@ -1,5 +1,5 @@
 """
-step_01_foundation.py
+step_01_foundation
 
 Builds the clean base tables needed by all subsequent feature modules:
   - base_posts.parquet      (167K deduplicated posts with target variable)
