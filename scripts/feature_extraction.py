@@ -41,7 +41,7 @@ SAVE_CSV    = True
 
 WINDOWS_MIN     = [5, 15, 30, 60]
 WHALE_THRESHOLD = 1_000
-
+NETWORK_WINDOW = 30
 
 
 # HELPERS
@@ -123,6 +123,9 @@ def velocity_features(counts_df: pd.DataFrame, prefix: str) -> pd.DataFrame:
         df[f"{p}_5m"] / (df[f"{p}_30m"] + 1)
     )
 
+    # Log transformed 30min counts (handles long tail)
+    df[f"{p}_30m_log"] = np.log1p(df[f"{p}_30m"])
+
     # Long-run growth: how much did it keep growing after the 30m window?
     if f"{p}_60m" in df.columns:
         df[f"{p}_growth_30_to_60m"] = (
@@ -130,6 +133,277 @@ def velocity_features(counts_df: pd.DataFrame, prefix: str) -> pd.DataFrame:
         )
 
     return df
+
+# ── HELPERS (Engager Network Quality) ────────────────
+
+def engager_network_features(events: pd.DataFrame,
+                             posts: pd.DataFrame,
+                             prefix: str,
+                             did_col: str,
+                             followers_col: str,
+                             window_min: int = NETWORK_WINDOW,
+                             whale_threshold: int = WHALE_THRESHOLD) -> pd.DataFrame:
+    """
+    Network quality of early engagers using follower data
+    already embedded in the event table.
+
+    Used for reposts (reposter_followers), replies (replier_followers),
+    and quotes (quoter_followers).
+    """
+    result = posts[["uri"]].set_index("uri")
+    p = prefix
+
+    default_cols = [
+        f"{p}_engager_count",
+        f"{p}_engager_followers_max",
+        f"{p}_engager_followers_mean",
+        f"{p}_engager_followers_median",
+        f"{p}_engager_followers_sum",
+        f"{p}_engager_followers_std",
+        f"{p}_engager_reach_log",
+        f"{p}_whale_count",
+        f"{p}_whale_ratio",
+        f"{p}_reach_concentration",
+    ]
+
+    if events.empty or followers_col not in events.columns:
+        for col in default_cols:
+            result[col] = 0.0
+        return result.reset_index()
+
+    windowed = events[events["time_delta_sec"].between(0, window_min * 60)].copy()
+
+    if windowed.empty:
+        for col in default_cols:
+            result[col] = 0.0
+        return result.reset_index()
+
+    # Deduplicate: one engagement per user per post
+    windowed = windowed.drop_duplicates(subset=["root_post_uri", did_col])
+
+    # Clean follower values
+    windowed["_followers"] = pd.to_numeric(
+        windowed[followers_col], errors="coerce"
+    ).fillna(0)
+
+    # Aggregate per post
+    agg = (windowed
+           .groupby("root_post_uri")["_followers"]
+           .agg(["count", "max", "mean", "median", "sum", "std"])
+           .rename(columns={
+               "count":  f"{p}_engager_count",
+               "max":    f"{p}_engager_followers_max",
+               "mean":   f"{p}_engager_followers_mean",
+               "median": f"{p}_engager_followers_median",
+               "sum":    f"{p}_engager_followers_sum",
+               "std":    f"{p}_engager_followers_std",
+           }))
+    agg[f"{p}_engager_followers_std"] = agg[f"{p}_engager_followers_std"].fillna(0)
+
+    agg[f"{p}_engager_reach_log"] = np.log1p(agg[f"{p}_engager_followers_sum"])
+
+    # Whale analysis
+    whale_counts = (windowed[windowed["_followers"] >= whale_threshold]
+                    .groupby("root_post_uri")
+                    .size()
+                    .rename(f"{p}_whale_count"))
+    agg = agg.join(whale_counts, how="left")
+    agg[f"{p}_whale_count"] = agg[f"{p}_whale_count"].fillna(0).astype(int)
+    agg[f"{p}_whale_ratio"] = (
+        agg[f"{p}_whale_count"] / (agg[f"{p}_engager_count"] + 1)
+    )
+
+    agg[f"{p}_reach_concentration"] = (
+        agg[f"{p}_engager_followers_max"] / (agg[f"{p}_engager_followers_sum"] + 1)
+    )
+
+    result = result.join(agg, how="left")
+    for col in default_cols:
+        if col in result.columns:
+            result[col] = result[col].fillna(0)
+        else:
+            result[col] = 0.0
+
+    return result.reset_index()
+
+
+def build_liker_follower_lookup(reposts, replies, quotes) -> pd.DataFrame:
+    """
+    Likes don't have follower data, but reposts/replies/quotes do.
+    Build a DID → follower_count lookup from the other three tables.
+    """
+    chunks = []
+
+    if not reposts.empty and "reposter_did" in reposts.columns:
+        chunks.append(
+            reposts[["reposter_did", "reposter_followers"]]
+            .rename(columns={"reposter_did": "did",
+                              "reposter_followers": "followers"})
+        )
+    if not replies.empty and "replier_did" in replies.columns:
+        chunks.append(
+            replies[["replier_did", "replier_followers"]]
+            .rename(columns={"replier_did": "did",
+                              "replier_followers": "followers"})
+        )
+    if not quotes.empty and "quoter_did" in quotes.columns:
+        chunks.append(
+            quotes[["quoter_did", "quoter_followers"]]
+            .rename(columns={"quoter_did": "did",
+                              "quoter_followers": "followers"})
+        )
+
+    if not chunks:
+        return pd.DataFrame(columns=["did", "followers"])
+
+    lookup = pd.concat(chunks, ignore_index=True)
+    lookup["followers"] = pd.to_numeric(
+        lookup["followers"], errors="coerce"
+    ).fillna(0)
+
+    # Take max per user (most recent / highest observed)
+    lookup = lookup.groupby("did")["followers"].max().reset_index()
+    return lookup
+
+
+def like_network_features(likes: pd.DataFrame,
+                          posts: pd.DataFrame,
+                          follower_lookup: pd.DataFrame,
+                          window_min: int = NETWORK_WINDOW,
+                          whale_threshold: int = WHALE_THRESHOLD) -> pd.DataFrame:
+    """
+    Network features for likes using cross-table follower lookup.
+    Coverage is partial — only likers who also appear in other tables.
+    """
+    result = posts[["uri"]].set_index("uri")
+    p = "like"
+
+    default_cols = [
+        f"{p}_engager_count",
+        f"{p}_engager_followers_max",
+        f"{p}_engager_followers_mean",
+        f"{p}_engager_followers_median",
+        f"{p}_engager_followers_sum",
+        f"{p}_engager_followers_std",
+        f"{p}_engager_reach_log",
+        f"{p}_whale_count",
+        f"{p}_whale_ratio",
+        f"{p}_reach_concentration",
+    ]
+
+    if likes.empty or follower_lookup.empty:
+        for col in default_cols:
+            result[col] = 0.0
+        return result.reset_index()
+
+    windowed = likes[likes["time_delta_sec"].between(0, window_min * 60)].copy()
+
+    if windowed.empty:
+        for col in default_cols:
+            result[col] = 0.0
+        return result.reset_index()
+
+    # Deduplicate
+    windowed = windowed.drop_duplicates(subset=["root_post_uri", "liker_did"])
+
+    # Join follower lookup
+    windowed = windowed.merge(
+        follower_lookup.rename(columns={"did": "liker_did",
+                                         "followers": "_followers"}),
+        on="liker_did", how="left"
+    )
+    windowed["_followers"] = windowed["_followers"].fillna(0)
+
+    matched = (windowed["_followers"] > 0).sum()
+    total   = len(windowed)
+    print(f"    Like follower coverage: {matched:,} / {total:,} "
+          f"({matched / max(total, 1) * 100:.1f}%)")
+
+    # Aggregate
+    agg = (windowed
+           .groupby("root_post_uri")["_followers"]
+           .agg(["count", "max", "mean", "median", "sum", "std"])
+           .rename(columns={
+               "count":  f"{p}_engager_count",
+               "max":    f"{p}_engager_followers_max",
+               "mean":   f"{p}_engager_followers_mean",
+               "median": f"{p}_engager_followers_median",
+               "sum":    f"{p}_engager_followers_sum",
+               "std":    f"{p}_engager_followers_std",
+           }))
+    agg[f"{p}_engager_followers_std"] = agg[f"{p}_engager_followers_std"].fillna(0)
+    agg[f"{p}_engager_reach_log"] = np.log1p(agg[f"{p}_engager_followers_sum"])
+
+    whale_counts = (windowed[windowed["_followers"] >= whale_threshold]
+                    .groupby("root_post_uri").size()
+                    .rename(f"{p}_whale_count"))
+    agg = agg.join(whale_counts, how="left")
+    agg[f"{p}_whale_count"] = agg[f"{p}_whale_count"].fillna(0).astype(int)
+    agg[f"{p}_whale_ratio"] = (
+        agg[f"{p}_whale_count"] / (agg[f"{p}_engager_count"] + 1)
+    )
+    agg[f"{p}_reach_concentration"] = (
+        agg[f"{p}_engager_followers_max"] / (agg[f"{p}_engager_followers_sum"] + 1)
+    )
+
+    result = result.join(agg, how="left")
+    for col in default_cols:
+        if col in result.columns:
+            result[col] = result[col].fillna(0)
+        else:
+            result[col] = 0.0
+
+    return result.reset_index()
+
+
+# ── HELPER (Author Baseline) ─────────────────────────
+
+def author_history_features(posts: pd.DataFrame) -> pd.DataFrame:
+    """
+    Leave-one-out author history using only the posts DataFrame.
+    Uses exact columns: did, created_at, total_likes, total_reposts,
+    total_replies, total_quotes.
+    """
+    df = posts.copy()
+    result = posts[["uri"]].copy()
+
+    print(f"  Unique authors: {df['did'].nunique():,}")
+
+    # Sort by author + creation time
+    df["_ts"] = pd.to_datetime(df["created_at"], errors="coerce")
+    df = df.sort_values(["did", "_ts"]).reset_index(drop=True)
+
+    # Prior post count (0-indexed = number of posts before this one)
+    result["author_prior_post_count"] = df.groupby("did").cumcount().values
+    result["author_prior_post_count_log"] = np.log1p(
+        result["author_prior_post_count"]
+    )
+
+    # Leave-one-out mean and max for each engagement metric
+    for metric, raw_col in [
+        ("likes",   "total_likes"),
+        ("reposts", "total_reposts"),
+        ("replies", "total_replies"),
+        ("quotes",  "total_quotes"),
+    ]:
+        vals = pd.to_numeric(df[raw_col], errors="coerce").fillna(0)
+
+        cum_sum   = vals.groupby(df["did"]).cumsum() - vals
+        cum_count = df.groupby("did").cumcount()
+
+        # Mean of all prior posts
+        result[f"author_hist_mean_{metric}"] = np.where(
+            cum_count > 0, cum_sum / cum_count, 0.0
+        )
+
+        # Max of all prior posts
+        shifted_max = (vals.groupby(df["did"])
+                       .apply(lambda s: s.shift(1).expanding().max())
+                       .reset_index(level=0, drop=True)
+                       .fillna(0))
+        result[f"author_hist_max_{metric}"] = shifted_max.values
+
+    return result
 
 
 def print_window_stats(name: str, df: pd.DataFrame, prefix: str, windows: list[int]):
@@ -158,6 +432,7 @@ def print_velocity_stats(name: str, df: pd.DataFrame, prefix: str):
         f"{prefix}_acceleration",
         f"{prefix}_velocity_ratio",
         f"{prefix}_burst_ratio",
+        f"{prefix}_30m_log",
         f"{prefix}_growth_30_to_60m",
     ]
     for col in vel_cols:
@@ -189,6 +464,20 @@ def print_ttf_stats(name: str, df: pd.DataFrame, col: str, sentinel: float = 9_9
             f"| min: {s.min():>6.0f}s"
         )
 
+# ── Network stats printer ────────────────────────────────────
+def print_network_stats(name: str, df: pd.DataFrame, prefix: str):
+    p = prefix
+    active = (df[f"{p}_engager_count"] > 0).sum()
+    whale  = df[f"{p}_whale_count"].sum()
+    print(f"\n  {name.upper()} network quality:"
+          f"\n    posts with engagers: {active:>6,} / {len(df):,}"
+          f"\n    total whale engagements: {whale:>6,.0f}")
+    for col in [f"{p}_engager_followers_max", f"{p}_engager_followers_mean",
+                f"{p}_engager_followers_sum", f"{p}_reach_concentration"]:
+        if col in df.columns:
+            s = df[col]
+            print(f"    {col:<40s}  mean={s.mean():>10.2f}  "
+                  f"median={s.median():>8.2f}")
 
 # MAIN
 
@@ -220,8 +509,10 @@ def main():
           f"|  non-viral: {(~posts['is_viral']).sum():,}  "
           f"|  viral rate: {posts['is_viral'].mean()*100:.2f}%")
 
-    # BLOCK 1: WINDOW COUNTS
-    
+        # ══════════════════════════════════════════════════════════
+    # BLOCK 1: WINDOW COUNTS (Layer 1 — original)
+    # ══════════════════════════════════════════════════════════
+
     print("\n" + "=" * 70)
     print("BLOCK 1: Window counts (5m / 15m / 30m / 60m)")
     print("=" * 70)
@@ -236,9 +527,10 @@ def main():
     print_window_stats("replies", reply_counts,  "reply",  WINDOWS_MIN)
     print_window_stats("quotes",  quote_counts,  "quote",  WINDOWS_MIN)
 
-    
-    # BLOCK 2: VELOCITY & ACCELERATION FEATURES
-    
+    # ══════════════════════════════════════════════════════════
+    # BLOCK 2: VELOCITY & ACCELERATION (Layer 1 — original + log)
+    # ══════════════════════════════════════════════════════════
+
     print("\n" + "=" * 70)
     print("BLOCK 2: Velocity & acceleration features")
     print("=" * 70)
@@ -253,9 +545,10 @@ def main():
     print_velocity_stats("replies", reply_counts,  "reply")
     print_velocity_stats("quotes",  quote_counts,  "quote")
 
-    
-    # BLOCK 3: TIME-TO-FIRST-EVENT FEATURES
-    
+    # ══════════════════════════════════════════════════════════
+    # BLOCK 3: TIME-TO-FIRST-EVENT (Layer 1 — original)
+    # ══════════════════════════════════════════════════════════
+
     print("\n" + "=" * 70)
     print("BLOCK 3: Time-to-first-event (seconds from post creation)")
     print("=" * 70)
@@ -270,13 +563,17 @@ def main():
     print_ttf_stats("reply",  ttf_reply,  "ttf_reply_sec")
     print_ttf_stats("quote",  ttf_quote,  "ttf_quote_sec")
 
-    # BLOCK 4: CONTENT FEATURES
-    
+    # ══════════════════════════════════════════════════════════
+    # BLOCK 4: CONTENT & AUTHOR FEATURES (Layer 3 — expanded)
+    # ══════════════════════════════════════════════════════════
+
     print("\n" + "=" * 70)
-    print("BLOCK 4: Content & author features")
+    print("BLOCK 4: Content & author features (expanded)")
     print("=" * 70)
 
     content = posts[["uri"]].copy()
+
+    # ── Original features ─────────────────────────────────────
     content["text_len"] = posts["text"].fillna("").str.len()
     content["has_embed"] = (
         posts.get("has_embed", pd.Series(0, index=posts.index))
@@ -287,9 +584,33 @@ def main():
         errors="coerce"
     ).fillna(0).astype(int)
     content["author_followers_log"] = np.log1p(content["author_followers"])
-    content["author_is_whale"]      = (content["author_followers"] >= WHALE_THRESHOLD).astype(int)
+    content["author_is_whale"]      = (
+        content["author_followers"] >= WHALE_THRESHOLD
+    ).astype(int)
 
-    print(f"  text_len          mean={content['text_len'].mean():.0f}  "
+    # ── NEW (Layer 3): author following count ─────────────────
+    content["author_follows"] = pd.to_numeric(
+        posts["author_follows"], errors="coerce"
+    ).fillna(0).astype(int)
+    content["author_follows_log"] = np.log1p(content["author_follows"])
+
+    # ── NEW (Layer 3): follower-to-following ratio ────────────
+    content["author_ff_ratio"] = (
+        content["author_followers"] / (content["author_follows"] + 1)
+    )
+
+    # ── NEW (Layer 3): author total post count from API ───────
+    content["author_posts_count"] = pd.to_numeric(
+        posts["author_posts_count"], errors="coerce"
+    ).fillna(0).astype(int)
+    content["author_posts_count_log"] = np.log1p(content["author_posts_count"])
+
+    # ── NEW (Layer 3): leave-one-out author history ───────────
+    print("\n  Computing leave-one-out author history...")
+    author_hist = author_history_features(posts)
+
+    # ── Stats ─────────────────────────────────────────────────
+    print(f"\n  text_len          mean={content['text_len'].mean():.0f}  "
           f"| median={content['text_len'].median():.0f}  "
           f"| max={content['text_len'].max()}")
     print(f"  has_embed         rate={content['has_embed'].mean()*100:.1f}%  "
@@ -297,12 +618,63 @@ def main():
     print(f"  author_followers  mean={content['author_followers'].mean():.0f}  "
           f"| median={content['author_followers'].median():.0f}  "
           f"| max={content['author_followers'].max()}")
+    print(f"  author_follows    mean={content['author_follows'].mean():.0f}  "
+          f"| median={content['author_follows'].median():.0f}")
+    print(f"  author_ff_ratio   mean={content['author_ff_ratio'].mean():.2f}  "
+          f"| median={content['author_ff_ratio'].median():.2f}")
     print(f"  author_is_whale   rate={content['author_is_whale'].mean()*100:.1f}%  "
           f"| count={content['author_is_whale'].sum():,}")
+    print(f"  author_posts_count  mean={content['author_posts_count'].mean():.0f}  "
+          f"| median={content['author_posts_count'].median():.0f}")
+    print(f"  prior_post_count  mean={author_hist['author_prior_post_count'].mean():.1f}  "
+          f"| median={author_hist['author_prior_post_count'].median():.0f}")
+    for m in ["likes", "reposts", "replies", "quotes"]:
+        col = f"author_hist_mean_{m}"
+        if col in author_hist.columns:
+            print(f"  {col:<40s}  mean={author_hist[col].mean():.2f}  "
+                  f"| median={author_hist[col].median():.2f}")
 
-    
-    # BLOCK 5: COMBINED ENGAGEMENT FEATURES (30m)
-    
+    # ══════════════════════════════════════════════════════════
+    # BLOCK 4B: ENGAGER NETWORK QUALITY (NEW — Layer 2)
+    # ══════════════════════════════════════════════════════════
+
+    print("\n" + "=" * 70)
+    print("BLOCK 4B: Engager network quality (30m window)")
+    print("=" * 70)
+
+    # Reposts, replies, quotes: follower data is IN the event table
+    net_reposts = engager_network_features(
+        reposts, posts, "repost",
+        did_col="reposter_did",
+        followers_col="reposter_followers"
+    )
+    net_replies = engager_network_features(
+        replies, posts, "reply",
+        did_col="replier_did",
+        followers_col="replier_followers"
+    )
+    net_quotes = engager_network_features(
+        quotes, posts, "quote",
+        did_col="quoter_did",
+        followers_col="quoter_followers"
+    )
+
+    # Likes: no follower data — build cross-table lookup
+    print("\n  Building liker follower lookup from other tables...")
+    liker_lookup = build_liker_follower_lookup(reposts, replies, quotes)
+    print(f"    Lookup size: {len(liker_lookup):,} unique DIDs")
+
+    net_likes = like_network_features(likes, posts, liker_lookup)
+
+    print_network_stats("reposts", net_reposts, "repost")
+    print_network_stats("likes",   net_likes,   "like")
+    print_network_stats("replies", net_replies,  "reply")
+    print_network_stats("quotes",  net_quotes,   "quote")
+
+    # ══════════════════════════════════════════════════════════
+    # BLOCK 5: COMBINED ENGAGEMENT FEATURES (original)
+    # ══════════════════════════════════════════════════════════
+
     print("\n" + "=" * 70)
     print("BLOCK 5: Combined engagement features (30m window)")
     print("=" * 70)
@@ -315,12 +687,12 @@ def main():
         .merge(quote_counts [["uri", "quote_30m"]],  on="uri", how="left")
         .fillna(0)
     )
-    combined_30m["total_engagement_30m"]   = (
+    combined_30m["total_engagement_30m"] = (
         combined_30m["repost_30m"] + combined_30m["like_30m"] +
         combined_30m["reply_30m"]  + combined_30m["quote_30m"]
     )
-    combined_30m["like_repost_ratio_30m"]  = (
-        combined_30m["like_30m"]  / (combined_30m["repost_30m"] + 1)
+    combined_30m["like_repost_ratio_30m"] = (
+        combined_30m["like_30m"] / (combined_30m["repost_30m"] + 1)
     )
     combined_30m["reply_repost_ratio_30m"] = (
         combined_30m["reply_30m"] / (combined_30m["repost_30m"] + 1)
@@ -334,10 +706,15 @@ def main():
           f"| median={combined_30m['total_engagement_30m'].median():.0f}  "
           f"| max={combined_30m['total_engagement_30m'].max():.0f}")
     print(f"  posts with any engagement: "
-          f"{(combined_30m['total_engagement_30m'] > 0).sum():,} / {len(combined_30m):,}")
-    print(f"  like_repost_ratio_30m   mean={combined_30m['like_repost_ratio_30m'].mean():.2f}")
-    print(f"  reply_repost_ratio_30m  mean={combined_30m['reply_repost_ratio_30m'].mean():.2f}")
-    print(f"  quote_repost_ratio_30m  mean={combined_30m['quote_repost_ratio_30m'].mean():.2f}")
+          f"{(combined_30m['total_engagement_30m'] > 0).sum():,} / "
+          f"{len(combined_30m):,}")
+    print(f"  like_repost_ratio_30m   "
+          f"mean={combined_30m['like_repost_ratio_30m'].mean():.2f}")
+    print(f"  reply_repost_ratio_30m  "
+          f"mean={combined_30m['reply_repost_ratio_30m'].mean():.2f}")
+    print(f"  quote_repost_ratio_30m  "
+          f"mean={combined_30m['quote_repost_ratio_30m'].mean():.2f}")
+
 
     
     # BLOCK 6: EMOTION FEATURES
@@ -375,16 +752,25 @@ def main():
     feat["is_viral"] = feat["is_viral"].astype(int)
 
     for block_df in [
+        # Layer 1: velocity + TTF
         repost_counts, like_counts, reply_counts, quote_counts,
         ttf_repost, ttf_like, ttf_reply, ttf_quote,
+        # Layer 3: author + content
         content,
-        combined_30m.drop(columns=["repost_30m", "like_30m", "reply_30m", "quote_30m"]),
+        author_hist,                                            # NEW
+        # Layer 2: network quality
+        net_reposts, net_likes, net_replies, net_quotes,        # NEW
+        # Combined
+        combined_30m.drop(
+            columns=["repost_30m", "like_30m", "reply_30m", "quote_30m"]),
         emotion_feat,
     ]:
         feat = feat.merge(block_df, on="uri", how="left")
 
-    print(f"\n  Final feature table: {len(feat):,} rows × {len(feat.columns)} columns")
-    print(f"  Viral posts:     {feat['is_viral'].sum():,}  ({feat['is_viral'].mean()*100:.2f}%)")
+    print(f"\n  Final feature table: {len(feat):,} rows × "
+          f"{len(feat.columns)} columns")
+    print(f"  Viral posts:     {feat['is_viral'].sum():,}  "
+          f"({feat['is_viral'].mean()*100:.2f}%)")
     print(f"  Non-viral posts: {(feat['is_viral']==0).sum():,}")
 
     
@@ -418,13 +804,44 @@ def main():
                 status = "✓" if violations == 0 else f"⚠ {violations} violations"
                 print(f"  {status}  {prefix}: {w1}m ≤ {w2}m counts")
 
+    # NEW: Inf check
+    numeric_cols = feat.select_dtypes(include=[np.number]).columns
+    inf_counts   = np.isinf(feat[numeric_cols]).sum()
+    inf_cols     = inf_counts[inf_counts > 0]
+    if len(inf_cols) > 0:
+        print(f"   Columns with inf values:")
+        for col, n in inf_cols.items():
+            print(f"      {col:<45s}: {n:,} infs")
+        feat[numeric_cols] = feat[numeric_cols].replace(
+            [np.inf, -np.inf], 0)
+        print("    Replaced inf values with 0")
+    else:
+        print("   No inf values")
+
+
     # Viral vs Non-Viral mean comparison 
     check_cols = [
-        "repost_5m", "repost_30m", "repost_velocity_ratio", "repost_burst_ratio",
-        "like_5m",   "like_30m",   "like_velocity_ratio",   "like_burst_ratio",
-        "reply_30m", "quote_30m",
-        "ttf_repost_sec", "ttf_like_sec",
-        "total_engagement_30m", "author_followers",
+       "repost_5m", "repost_30m", "repost_30m_log",           # L1
+        "repost_velocity_ratio", "repost_burst_ratio",          # L1
+        "like_5m", "like_30m", "like_30m_log",                  # L1
+        "like_velocity_ratio", "like_burst_ratio",              # L1
+        "reply_30m", "quote_30m",                               # L1
+        "ttf_repost_sec", "ttf_like_sec",                       # L1
+        "total_engagement_30m",                                 # combined
+        "repost_engager_followers_max",                         # L2
+        "repost_engager_followers_sum",                         # L2
+        "like_engager_followers_max",                           # L2
+        "repost_whale_count",                                   # L2
+        "like_whale_count",                                     # L2
+        "repost_reach_concentration",                           # L2
+        "author_followers",                                     # L3
+        "author_follows",                                       # L3
+        "author_ff_ratio",                                      # L3
+        "author_posts_count",                                   # L3
+        "author_prior_post_count",                              # L3
+        "author_hist_mean_likes",                               # L3
+        "author_hist_mean_reposts",                             # L3
+        "author_hist_max_reposts", 
     ]
     print(f"\n  {'Feature':<35s} {'Viral mean':>12s} {'Non-viral mean':>14s} {'Ratio':>8s}")
     print(f"  {'-'*73}")
