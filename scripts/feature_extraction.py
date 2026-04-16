@@ -39,14 +39,14 @@ CASCADE_DIR = ROOT / "datasets" / "bluesky_cascade"
 OUTPUT_DIR  = CASCADE_DIR
 SAVE_CSV    = True
 
-WINDOWS_MIN     = [5, 15, 30, 60]
+WINDOWS_MIN     = [5, 10, 15, 30]
 WHALE_THRESHOLD = 1_000
 NETWORK_WINDOW = 30
 
 
 # HELPERS
 
-
+# Counts how many events of one type happen for each post within each time window.
 def window_counts(events: pd.DataFrame,
                   posts: pd.DataFrame,
                   prefix: str,
@@ -76,15 +76,12 @@ def window_counts(events: pd.DataFrame,
 
     return result.reset_index()
 
-
+# Computes the time from post creation to the first event of a given type
 def time_to_first(events: pd.DataFrame,
                   posts: pd.DataFrame,
                   col_name: str,
                   sentinel: float = 9_999.0) -> pd.DataFrame:
-    """
-    Seconds from post creation to first event.
-    Posts with no events get the sentinel value (9999).
-    """
+    
     if events.empty:
         return posts[["uri"]].assign(**{col_name: sentinel})
 
@@ -99,25 +96,26 @@ def time_to_first(events: pd.DataFrame,
     return posts[["uri"]].merge(first, on="uri", how="left").fillna({col_name: sentinel})
 
 
+# Derives velocity and acceleration features from the raw window counts
 def velocity_features(counts_df: pd.DataFrame, prefix: str) -> pd.DataFrame:
-    """
-    Derive acceleration and velocity ratio columns from raw window counts.
-    Requires columns: {prefix}_5m, {prefix}_15m, {prefix}_30m, {prefix}_60m
-    """
+
     df = counts_df.copy()
     p  = prefix
 
-    # Volume in second half of 30m window (15→30m)
+    # Volume in second half of 30m window (10→30m)
+    df[f"{p}_10_to_30m"] = df[f"{p}_30m"] - df[f"{p}_10m"]
+    
+    # Growth between 15m and 30m
     df[f"{p}_15_to_30m"] = df[f"{p}_30m"] - df[f"{p}_15m"]
 
-    # Acceleration: positive = speeding up, negative = dying down
+    # Acceleration: relative to first 15m
     df[f"{p}_acceleration"] = df[f"{p}_15_to_30m"] - df[f"{p}_15m"]
 
     # Velocity ratio: second half / first half  (>1 = still accelerating at 30m)
     df[f"{p}_velocity_ratio"] = (
         df[f"{p}_15_to_30m"] / (df[f"{p}_15m"] + 1)
     )
-
+    
     # Early burst ratio: fraction of 30m events that hit in first 5m
     df[f"{p}_burst_ratio"] = (
         df[f"{p}_5m"] / (df[f"{p}_30m"] + 1)
@@ -126,16 +124,9 @@ def velocity_features(counts_df: pd.DataFrame, prefix: str) -> pd.DataFrame:
     # Log transformed 30min counts (handles long tail)
     df[f"{p}_30m_log"] = np.log1p(df[f"{p}_30m"])
 
-    # Long-run growth: how much did it keep growing after the 30m window?
-    if f"{p}_60m" in df.columns:
-        df[f"{p}_growth_30_to_60m"] = (
-            df[f"{p}_60m"] / (df[f"{p}_30m"] + 1)
-        )
-
     return df
 
-# ── HELPERS (Engager Network Quality) ────────────────
-
+# Describes the quality of the people engaging, not just how many there are
 def engager_network_features(events: pd.DataFrame,
                              posts: pd.DataFrame,
                              prefix: str,
@@ -356,7 +347,7 @@ def like_network_features(likes: pd.DataFrame,
     return result.reset_index()
 
 
-# ── HELPER (Author Baseline) ─────────────────────────
+# HELPER (Author Baseline) 
 
 def author_history_features(posts: pd.DataFrame) -> pd.DataFrame:
     """
@@ -370,7 +361,7 @@ def author_history_features(posts: pd.DataFrame) -> pd.DataFrame:
     print(f"  Unique authors: {df['did'].nunique():,}")
 
     # Sort by author + creation time
-    df["_ts"] = pd.to_datetime(df["created_at"], errors="coerce")
+    df["_ts"] = pd.to_datetime(df["created_at"], errors="coerce", utc=True)
     df = df.sort_values(["did", "_ts"]).reset_index(drop=True)
 
     # Prior post count (0-indexed = number of posts before this one)
@@ -428,12 +419,12 @@ def print_velocity_stats(name: str, df: pd.DataFrame, prefix: str):
     """Print derived velocity feature statistics."""
     print(f"\n  {name.upper()} velocity features:")
     vel_cols = [
+        f"{prefix}_10_to_30m",
         f"{prefix}_15_to_30m",
         f"{prefix}_acceleration",
         f"{prefix}_velocity_ratio",
         f"{prefix}_burst_ratio",
         f"{prefix}_30m_log",
-        f"{prefix}_growth_30_to_60m",
     ]
     for col in vel_cols:
         if col not in df.columns:
@@ -464,7 +455,7 @@ def print_ttf_stats(name: str, df: pd.DataFrame, col: str, sentinel: float = 9_9
             f"| min: {s.min():>6.0f}s"
         )
 
-# ── Network stats printer ────────────────────────────────────
+# Network stats printer 
 def print_network_stats(name: str, df: pd.DataFrame, prefix: str):
     p = prefix
     active = (df[f"{p}_engager_count"] > 0).sum()
@@ -509,14 +500,14 @@ def main():
           f"|  non-viral: {(~posts['is_viral']).sum():,}  "
           f"|  viral rate: {posts['is_viral'].mean()*100:.2f}%")
 
-        # ══════════════════════════════════════════════════════════
+
     # BLOCK 1: WINDOW COUNTS (Layer 1 — original)
-    # ══════════════════════════════════════════════════════════
 
     print("\n" + "=" * 70)
-    print("BLOCK 1: Window counts (5m / 15m / 30m / 60m)")
+    print("BLOCK 1: Window counts (5m / 10m / 15m / 30m)")
     print("=" * 70)
 
+    # Builds the raw early count features for each interaction type    
     repost_counts = window_counts(reposts, posts, "repost", WINDOWS_MIN)
     like_counts   = window_counts(likes,   posts, "like",   WINDOWS_MIN)
     reply_counts  = window_counts(replies, posts, "reply",  WINDOWS_MIN)
@@ -527,9 +518,8 @@ def main():
     print_window_stats("replies", reply_counts,  "reply",  WINDOWS_MIN)
     print_window_stats("quotes",  quote_counts,  "quote",  WINDOWS_MIN)
 
-    # ══════════════════════════════════════════════════════════
+
     # BLOCK 2: VELOCITY & ACCELERATION (Layer 1 — original + log)
-    # ══════════════════════════════════════════════════════════
 
     print("\n" + "=" * 70)
     print("BLOCK 2: Velocity & acceleration features")
@@ -545,9 +535,8 @@ def main():
     print_velocity_stats("replies", reply_counts,  "reply")
     print_velocity_stats("quotes",  quote_counts,  "quote")
 
-    # ══════════════════════════════════════════════════════════
+
     # BLOCK 3: TIME-TO-FIRST-EVENT (Layer 1 — original)
-    # ══════════════════════════════════════════════════════════
 
     print("\n" + "=" * 70)
     print("BLOCK 3: Time-to-first-event (seconds from post creation)")
@@ -563,9 +552,8 @@ def main():
     print_ttf_stats("reply",  ttf_reply,  "ttf_reply_sec")
     print_ttf_stats("quote",  ttf_quote,  "ttf_quote_sec")
 
-    # ══════════════════════════════════════════════════════════
+   
     # BLOCK 4: CONTENT & AUTHOR FEATURES (Layer 3 — expanded)
-    # ══════════════════════════════════════════════════════════
 
     print("\n" + "=" * 70)
     print("BLOCK 4: Content & author features (expanded)")
@@ -573,7 +561,7 @@ def main():
 
     content = posts[["uri"]].copy()
 
-    # ── Original features ─────────────────────────────────────
+    # Original features 
     content["text_len"] = posts["text"].fillna("").str.len()
     content["has_embed"] = (
         posts.get("has_embed", pd.Series(0, index=posts.index))
@@ -588,28 +576,28 @@ def main():
         content["author_followers"] >= WHALE_THRESHOLD
     ).astype(int)
 
-    # ── NEW (Layer 3): author following count ─────────────────
+    # NEW (Layer 3): author following count 
     content["author_follows"] = pd.to_numeric(
         posts["author_follows"], errors="coerce"
     ).fillna(0).astype(int)
     content["author_follows_log"] = np.log1p(content["author_follows"])
 
-    # ── NEW (Layer 3): follower-to-following ratio ────────────
+    # NEW (Layer 3): follower-to-following ratio 
     content["author_ff_ratio"] = (
         content["author_followers"] / (content["author_follows"] + 1)
     )
 
-    # ── NEW (Layer 3): author total post count from API ───────
+    # NEW (Layer 3): author total post count from API 
     content["author_posts_count"] = pd.to_numeric(
         posts["author_posts_count"], errors="coerce"
     ).fillna(0).astype(int)
     content["author_posts_count_log"] = np.log1p(content["author_posts_count"])
 
-    # ── NEW (Layer 3): leave-one-out author history ───────────
+    # NEW (Layer 3): leave-one-out author history 
     print("\n  Computing leave-one-out author history...")
     author_hist = author_history_features(posts)
 
-    # ── Stats ─────────────────────────────────────────────────
+    # Stats 
     print(f"\n  text_len          mean={content['text_len'].mean():.0f}  "
           f"| median={content['text_len'].median():.0f}  "
           f"| max={content['text_len'].max()}")
@@ -634,9 +622,8 @@ def main():
             print(f"  {col:<40s}  mean={author_hist[col].mean():.2f}  "
                   f"| median={author_hist[col].median():.2f}")
 
-    # ══════════════════════════════════════════════════════════
+
     # BLOCK 4B: ENGAGER NETWORK QUALITY (NEW — Layer 2)
-    # ══════════════════════════════════════════════════════════
 
     print("\n" + "=" * 70)
     print("BLOCK 4B: Engager network quality (30m window)")
@@ -671,9 +658,8 @@ def main():
     print_network_stats("replies", net_replies,  "reply")
     print_network_stats("quotes",  net_quotes,   "quote")
 
-    # ══════════════════════════════════════════════════════════
+ 
     # BLOCK 5: COMBINED ENGAGEMENT FEATURES (original)
-    # ══════════════════════════════════════════════════════════
 
     print("\n" + "=" * 70)
     print("BLOCK 5: Combined engagement features (30m window)")
@@ -682,11 +668,21 @@ def main():
     combined_30m = (
         posts[["uri"]]
         .merge(repost_counts[["uri", "repost_30m"]], on="uri", how="left")
-        .merge(like_counts  [["uri", "like_30m"]],   on="uri", how="left")
-        .merge(reply_counts [["uri", "reply_30m"]],  on="uri", how="left")
-        .merge(quote_counts [["uri", "quote_30m"]],  on="uri", how="left")
+        .merge(like_counts[["uri", "like_30m"]], on="uri", how="left")
+        .merge(reply_counts[["uri", "reply_30m"]], on="uri", how="left")
+        .merge(quote_counts[["uri", "quote_30m"]], on="uri", how="left")
         .fillna(0)
     )
+
+    combined_30m = (
+        combined_30m
+        .merge(repost_counts[["uri", "repost_10m"]], on="uri", how="left")
+        .merge(like_counts[["uri", "like_10m"]], on="uri", how="left")
+        .merge(reply_counts[["uri", "reply_10m"]], on="uri", how="left")
+        .merge(quote_counts[["uri", "quote_10m"]], on="uri", how="left")
+        .fillna(0)
+    )
+
     combined_30m["total_engagement_30m"] = (
         combined_30m["repost_30m"] + combined_30m["like_30m"] +
         combined_30m["reply_30m"]  + combined_30m["quote_30m"]
@@ -699,6 +695,22 @@ def main():
     )
     combined_30m["quote_repost_ratio_30m"] = (
         combined_30m["quote_30m"] / (combined_30m["repost_30m"] + 1)
+    )
+    # Total engagement at 10 minutes
+    combined_30m["total_engagement_10m"] = (
+        combined_30m["repost_10m"] +
+        combined_30m["like_10m"] +
+        combined_30m["reply_10m"] +
+        combined_30m["quote_10m"]
+    )
+
+    # Ratios at 10 minutes
+    combined_30m["like_repost_ratio_10m"] = (
+        combined_30m["like_10m"] / (combined_30m["repost_10m"] + 1)
+    )
+
+    combined_30m["reply_repost_ratio_10m"] = (
+        combined_30m["reply_10m"] / (combined_30m["repost_10m"] + 1)
     )
 
     print(f"  total_engagement_30m    "
@@ -762,7 +774,11 @@ def main():
         net_reposts, net_likes, net_replies, net_quotes,        # NEW
         # Combined
         combined_30m.drop(
-            columns=["repost_30m", "like_30m", "reply_30m", "quote_30m"]),
+            columns=[
+                "repost_10m", "like_10m", "reply_10m", "quote_10m",
+                "repost_30m", "like_30m", "reply_30m", "quote_30m"
+            ]
+        ),
         emotion_feat,
     ]:
         feat = feat.merge(block_df, on="uri", how="left")
@@ -797,7 +813,7 @@ def main():
     # Monotonic window check 
     # Counts at 15m must be <= counts at 30m, etc — catches time_delta_sec bugs
     for prefix in ["repost", "like", "reply", "quote"]:
-        for w1, w2 in [(5, 15), (15, 30), (30, 60)]:
+        for w1, w2 in [(5, 10), (10, 15), (15, 30)]:
             c1, c2 = f"{prefix}_{w1}m", f"{prefix}_{w2}m"
             if c1 in feat.columns and c2 in feat.columns:
                 violations = (feat[c2] < feat[c1]).sum()
