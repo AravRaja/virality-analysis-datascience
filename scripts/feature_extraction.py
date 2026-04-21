@@ -119,38 +119,56 @@ def velocity_features(counts_df: pd.DataFrame,
                       prefix: str,
                       windows: list[int]) -> pd.DataFrame:
     """
-    Derive velocity and acceleration features dynamically from windows.
- 
-    Uses three key positions:
-        w_burst = windows[0]           first fraction  (early burst)
-        w_half  = windows[mid index]   midpoint        (velocity split)
-        w_full  = windows[-1]          full window     (total)
- 
+    Derive velocity and acceleration features from equal-length late segments.
+
+
     Features produced:
-        {p}_{w_half}_to_{w_full}m  second-half volume
-        {p}_acceleration           second half minus first half
-        {p}_velocity_ratio         second half / (first half + 1)
-        {p}_burst_ratio            first fraction / (full + 1)
-        {p}_{w_full}m_log          log(1 + full count)
+      - {p}_{w_prev2}_to_{w_prev1}m   previous segment growth
+      - {p}_{w_prev1}_to_{w_full}m    latest segment growth
+      - {p}_acceleration              latest segment - previous segment
+      - {p}_velocity_ratio            latest segment / (previous segment + 1)
+      - {p}_burst_ratio               first window / full window
+      - {p}_{w_full}m_log             log(1 + full count)
     """
-    df      = counts_df.copy()
-    p       = prefix
-    n       = len(windows)
+    df = counts_df.copy()
+    p = prefix
+
+    if len(windows) < 3:
+        raise ValueError("Need at least 3 windows to compute segment-based velocity features")
+
     w_burst = windows[0]
-    w_half  = windows[n // 2]
+    w_prev2 = windows[-3]
+    w_prev1 = windows[-2]
     w_full  = windows[-1]
- 
+
     c_burst = f"{p}_{w_burst}m"
-    c_half  = f"{p}_{w_half}m"
+    c_prev2 = f"{p}_{w_prev2}m"
+    c_prev1 = f"{p}_{w_prev1}m"
     c_full  = f"{p}_{w_full}m"
- 
-    second_half_col         = f"{p}_{w_half}_to_{w_full}m"
-    df[second_half_col]     = df[c_full] - df[c_half]
-    df[f"{p}_acceleration"] = df[second_half_col] - df[c_half]
-    df[f"{p}_velocity_ratio"] = df[second_half_col] / (df[c_half] + 1)
-    df[f"{p}_burst_ratio"]  = df[c_burst] / (df[c_full] + 1)
-    df[f"{p}_{w_full}m_log"]= np.log1p(df[c_full])
- 
+
+    prev_segment_col = f"{p}_{w_prev2}_to_{w_prev1}m"
+    late_segment_col = f"{p}_{w_prev1}_to_{w_full}m"
+
+    # growth in previous late segment
+    df[prev_segment_col] = df[c_prev1] - df[c_prev2]
+
+    # growth in final late segment
+    df[late_segment_col] = df[c_full] - df[c_prev1]
+
+    # is the final segment faster or slower than the one before it?
+    df[f"{p}_acceleration"] = df[late_segment_col] - df[prev_segment_col]
+
+    # relative speed of the final segment vs the previous one
+    df[f"{p}_velocity_ratio"] = (
+        df[late_segment_col] / (df[prev_segment_col] + 1)
+    )
+
+    # fraction of all engagement that arrived in the earliest window
+    df[f"{p}_burst_ratio"] = df[c_burst] / (df[c_full] + 1)
+
+    # log-transformed total count at full window
+    df[f"{p}_{w_full}m_log"] = np.log1p(df[c_full])
+
     return df
 
 # Describes the quality of the people engaging, not just how many there are
@@ -363,24 +381,30 @@ def print_window_stats(name, df, prefix, windows):
 
 
 def print_velocity_stats(name, df, prefix, windows):
-    w_full = windows[-1]
-    w_half = windows[len(windows) // 2]
+    w_full  = windows[-1]
+    w_prev1 = windows[-2]
+    w_prev2 = windows[-3]
+
     print(f"\n  {name.upper()} velocity features:")
     vel_cols = [
-        f"{prefix}_{w_half}_to_{w_full}m",
+        f"{prefix}_{w_prev2}_to_{w_prev1}m",
+        f"{prefix}_{w_prev1}_to_{w_full}m",
         f"{prefix}_acceleration",
         f"{prefix}_velocity_ratio",
         f"{prefix}_burst_ratio",
         f"{prefix}_{w_full}m_log",
     ]
+
     for col in vel_cols:
         if col not in df.columns:
             continue
         s = df[col]
-        print(f"    {col:<40s}  mean={s.mean():>8.3f}  "
-              f"median={s.median():>7.3f}  "
-              f"p95={s.quantile(0.95):>8.3f}  "
-              f"max={s.max():>10.3f}")
+        print(
+            f"    {col:<40s}  mean={s.mean():>8.3f}  "
+            f"median={s.median():>7.3f}  "
+            f"p95={s.quantile(0.95):>8.3f}  "
+            f"max={s.max():>10.3f}"
+        )
 
 
 def print_ttf_stats(name, df, col, sentinel=9_999.0):
